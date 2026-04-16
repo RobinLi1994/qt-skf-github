@@ -43,7 +43,8 @@ jobs:
           brew install create-dmg openssl@3
           echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
           cmake --version
-          macdeployqt -version
+          qtpaths --qt-version
+          command -v macdeployqt
           command -v create-dmg
 
       - name: Configure
