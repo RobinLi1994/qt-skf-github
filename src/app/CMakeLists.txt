@@ -58,13 +58,16 @@ target_compile_options(wekey-skf PRIVATE
 # 打包阶段：由打包脚本将库嵌入 .app bundle 的 Frameworks/ 或 exe 同目录
 if(APPLE)
     # macOS 按目标架构选择对应的 SKF 库
-    # arm64 用 libgm3000.dylib，x86_64 用 libgm3000.1.0_x86.dylib
-    # CMAKE_OSX_ARCHITECTURES 可能包含 "arm64;x86_64"（universal）或单一架构
-    if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64" AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
-        # 仅 x86_64
+    # arm64 仅构建时使用 arm64 专用库，x86_64 仅构建时使用 x86 专用库
+    # 未显式指定单架构或 universal 构建时回退到通用库
+    # 这里 build/lib 仍统一落为 libgm3000.dylib：
+    # 开发态界面会优先找真实架构文件名；如果只有统一名称，也仍能正常回退加载。
+    # 打包阶段同样统一落为 libgm3000.dylib，避免运行时代码感知文件名差异。
+    if(CMAKE_OSX_ARCHITECTURES MATCHES "arm64" AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+        set(BUILTIN_SKF_SRC "${CMAKE_SOURCE_DIR}/resources/lib/mac/libgm3000.1.0_arm64.dylib")
+    elseif(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64" AND NOT CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
         set(BUILTIN_SKF_SRC "${CMAKE_SOURCE_DIR}/resources/lib/mac/libgm3000.1.0_x86.dylib")
     else()
-        # arm64 或 universal（universal 优先用 arm64 版本，运行时按实际架构加载）
         set(BUILTIN_SKF_SRC "${CMAKE_SOURCE_DIR}/resources/lib/mac/libgm3000.dylib")
     endif()
     set(BUILTIN_SKF_DST "${CMAKE_BINARY_DIR}/lib/libgm3000.dylib")

@@ -40,6 +40,11 @@ stages:
 # ==============================================================================
 # macOS AMD64 (Intel x86_64)
 # 产物: wekey-skf-macos-amd64.dmg
+# 说明:
+#   - 构建目标为 x86_64
+#   - 打包脚本会先选择 x86_64 对应的 gm3000 源库
+#   - 最终仍统一嵌入到 .app/Contents/Frameworks/libgm3000.dylib
+#   - 脚本内会额外校验主程序和该内置驱动的 Mach-O 架构，失败则直接终止 job
 # ==============================================================================
 package:macos-amd64:
   stage: package
@@ -64,7 +69,8 @@ package:macos-amd64:
         -DCMAKE_OSX_ARCHITECTURES=x86_64 \
         -DOPENSSL_ROOT_DIR=$(brew --prefix openssl)
     - cmake --build build -j$(sysctl -n hw.ncpu)
-    # Step 2: 打包 (GitLab 自动注入 CI=true，脚本复用 build 目录)
+    # Step 2: 打包 + 校验包内主程序/内置驱动架构
+    # GitLab 自动注入 CI=true，脚本会直接复用上一步的 build 目录
     - bash scripts/package_mac_amd.sh
   artifacts:
     name: wekey-skf-macos-amd64-$CI_COMMIT_SHORT_SHA
@@ -75,6 +81,11 @@ package:macos-amd64:
 # ==============================================================================
 # macOS ARM64 (Apple Silicon M1/M2/M3)
 # 产物: wekey-skf-macos-arm64.dmg
+# 说明:
+#   - 构建目标为 arm64
+#   - 打包脚本会先选择 arm64 对应的 gm3000 源库
+#   - 最终仍统一嵌入到 .app/Contents/Frameworks/libgm3000.dylib
+#   - 脚本内会额外校验主程序和该内置驱动的 Mach-O 架构，失败则直接终止 job
 # ==============================================================================
 package:macos-arm64:
   stage: package
@@ -101,7 +112,8 @@ package:macos-arm64:
         -DCMAKE_OSX_ARCHITECTURES=arm64 \
         -DOPENSSL_ROOT_DIR=$(brew --prefix openssl)
     - cmake --build build -j$(sysctl -n hw.ncpu)
-    # Step 2: 打包 (GitLab 自动注入 CI=true，脚本复用 build 目录)
+    # Step 2: 打包 + 校验包内主程序/内置驱动架构
+    # GitLab 自动注入 CI=true，脚本会直接复用上一步的 build 目录
     - bash scripts/package_mac_arm.sh
   artifacts:
     name: wekey-skf-macos-arm64-$CI_COMMIT_SHORT_SHA

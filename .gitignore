@@ -60,8 +60,6 @@ xcuserdata/
 *.out
 *.app
 *.dSYM/
-!resources/lib/mac/libgm3000.dylib
-!resources/lib/mac/libgm3000.1.0_x86.dylib
 
 # ==============================================================================
 # Qt specific

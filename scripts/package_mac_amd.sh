@@ -13,6 +13,9 @@ set -euo pipefail
 
 APP_NAME="wekey-skf"
 DIST_DIR="dist"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 统一用同一套输出格式校验主程序和内置驱动架构
+ARCH_INSPECTOR="${SCRIPT_DIR}/inspect_mac_mach_arch.sh"
 ARCH="amd64"
 DMG_NAME="${APP_NAME}-macos-${ARCH}.dmg"
 
@@ -82,11 +85,11 @@ if [ -d "${DIST_DIR}/${APP_NAME}.app" ]; then
     FRAMEWORKS_DIR="${DIST_DIR}/${APP_NAME}.app/Contents/Frameworks"
     mkdir -p "${FRAMEWORKS_DIR}"
 
-    # amd64 使用 x86 版本的 SKF 库
-    SKF_LIB_SRC="resources/lib/mac/libgm3000.1.0_x86.dylib"
+    SKF_LIB_SRC="$(bash "${SCRIPT_DIR}/select_mac_skf_lib.sh" "${ARCH}")"
 
     if [ -f "${SKF_LIB_SRC}" ]; then
-        # 统一拷贝为 libgm3000.dylib，运行时代码只认这个名字
+        # 包内文件名固定为 libgm3000.dylib，便于运行时始终按固定路径加载。
+        # 当前 x86_64/amd64 包的区别体现在文件内容，而不是最终文件名。
         cp "${SKF_LIB_SRC}" "${FRAMEWORKS_DIR}/libgm3000.dylib"
         # 修正 dylib 的 install_name，使其可通过 @rpath 加载
         install_name_tool -id @rpath/libgm3000.dylib "${FRAMEWORKS_DIR}/libgm3000.dylib" 2>/dev/null || true
@@ -167,14 +170,17 @@ README
 echo "--- Step 6: Verify Architecture ---"
 if [ -d "${DIST_DIR}/${APP_NAME}.app" ]; then
     MAIN_BINARY="${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
+    SKF_LIBRARY="${DIST_DIR}/${APP_NAME}.app/Contents/Frameworks/libgm3000.dylib"
     if [ -f "${MAIN_BINARY}" ]; then
-        FILE_ARCH=$(file "${MAIN_BINARY}")
-        echo "Binary architecture: ${FILE_ARCH}"
-        if echo "${FILE_ARCH}" | grep -q "x86_64"; then
-            echo "Architecture verification PASSED: x86_64 confirmed"
-        else
-            echo "WARN: Expected x86_64 architecture, got: ${FILE_ARCH}"
-        fi
+        bash "${ARCH_INSPECTOR}" "${MAIN_BINARY}" "${ARCH}" "Main binary"
+    else
+        echo "WARN: Main binary not found for architecture verification: ${MAIN_BINARY}"
+    fi
+    if [ -f "${SKF_LIBRARY}" ]; then
+        # 额外检查内置驱动，避免“主程序是 x86_64 但 Frameworks 里塞了 arm64 库”的情况
+        bash "${ARCH_INSPECTOR}" "${SKF_LIBRARY}" "${ARCH}" "SKF library"
+    else
+        echo "WARN: SKF library not found for architecture verification: ${SKF_LIBRARY}"
     fi
 fi
 
