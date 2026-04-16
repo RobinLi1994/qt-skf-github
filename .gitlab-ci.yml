@@ -1,0 +1,146 @@
+
+# ==============================================================================
+# GitLab CI/CD - wekey-skf 多平台打包流水线
+#
+# 触发条件：仅支持在 GitLab UI 手动触发（CI/CD → Pipelines → Run pipeline）
+#
+# Runner 要求：
+#   - macos-amd64: macOS x86_64 自托管 runner，已安装 Qt 6、cmake、create-dmg
+#   - macos-arm64: macOS arm64 自托管 runner，已安装 Qt 6、cmake、create-dmg
+#   - windows:     Windows x86_64 runner，已安装 Qt 6 (MSVC)、cmake、OpenSSL。
+#                  Inno Setup 和 vc_redist 可随仓库提供；若仓库未提供，则脚本自动从 runner 环境发现。
+#
+# 自定义 Runner Tag：
+#   根据你的 Runner 注册情况，修改各 job 的 tags 字段。
+# ==============================================================================
+
+workflow:
+  rules:
+    # 仅允许从 GitLab UI 手动触发 (Run pipeline)
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: always
+    # 其他触发方式（push、merge_request 等）一律不运行
+    - when: never
+
+variables:
+  QT_VERSION: "6.10.2"
+  BUILD_TYPE: "Release"
+  PACKAGE_PLATFORM:
+    value: "all"
+    options:
+      - "all"
+      - "macos-amd64"
+      - "macos-arm64"
+      - "windows-amd64"
+    description: "选择打包平台，默认 all。"
+
+stages:
+  - package
+
+# ==============================================================================
+# macOS AMD64 (Intel x86_64)
+# 产物: wekey-skf-macos-amd64.dmg
+# ==============================================================================
+package:macos-amd64:
+  stage: package
+  rules:
+    - if: '$PACKAGE_PLATFORM == "all" || $PACKAGE_PLATFORM == "macos-amd64"'
+    - when: never
+  tags:
+    - macos-amd64
+  cache:
+    key: cmake-deps-macos-amd64-$CI_COMMIT_REF_SLUG
+    paths:
+      - build/_deps
+    policy: pull-push
+  before_script:
+    - cmake --version
+    - brew install create-dmg || true
+  script:
+    # Step 1: 构建 (x86_64)
+    - |
+      cmake -B build \
+        -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
+        -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+        -DOPENSSL_ROOT_DIR=$(brew --prefix openssl)
+    - cmake --build build -j$(sysctl -n hw.ncpu)
+    # Step 2: 打包 (GitLab 自动注入 CI=true，脚本复用 build 目录)
+    - bash scripts/package_mac_amd.sh
+  artifacts:
+    name: wekey-skf-macos-amd64-$CI_COMMIT_SHORT_SHA
+    paths:
+      - wekey-skf-macos-amd64.dmg
+    expire_in: 30 days
+
+# ==============================================================================
+# macOS ARM64 (Apple Silicon M1/M2/M3)
+# 产物: wekey-skf-macos-arm64.dmg
+# ==============================================================================
+package:macos-arm64:
+  stage: package
+  rules:
+    - if: '$PACKAGE_PLATFORM == "all" || $PACKAGE_PLATFORM == "macos-arm64"'
+    - when: never
+  tags:
+    - macos-arm64
+  cache:
+    key: cmake-deps-macos-arm64-$CI_COMMIT_REF_SLUG
+    paths:
+      - build/_deps
+    policy: pull-push
+  before_script:
+    # shell executor 不加载 ~/.zshrc，手动补充 Homebrew 路径（Apple Silicon: /opt/homebrew）
+    - export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+    - cmake --version
+    - brew install create-dmg || true
+  script:
+    # Step 1: 构建 (arm64)
+    - |
+      cmake -B build \
+        -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
+        -DCMAKE_OSX_ARCHITECTURES=arm64 \
+        -DOPENSSL_ROOT_DIR=$(brew --prefix openssl)
+    - cmake --build build -j$(sysctl -n hw.ncpu)
+    # Step 2: 打包 (GitLab 自动注入 CI=true，脚本复用 build 目录)
+    - bash scripts/package_mac_arm.sh
+  artifacts:
+    name: wekey-skf-macos-arm64-$CI_COMMIT_SHORT_SHA
+    paths:
+      - wekey-skf-macos-arm64.dmg
+    expire_in: 30 days
+
+# ==============================================================================
+# Windows AMD64 (x86_64)
+# 产物: wekey-skf-windows-amd64-setup.exe
+# ==============================================================================
+package:windows-amd64:
+  stage: package
+  rules:
+    - if: '$PACKAGE_PLATFORM == "all" || $PACKAGE_PLATFORM == "windows-amd64"'
+    - when: never
+  tags:
+    - windows
+  variables:
+    PKG_ARCH: "amd64"
+    OPENSSL_ROOT_DIR: 'C:\Qt\Tools\OpenSSLv3\Win_x64'
+  cache:
+    key: cmake-deps-windows-amd64-$CI_COMMIT_REF_SLUG
+    paths:
+      - build/_deps
+    policy: pull-push
+  before_script:
+    - '$env:PATH = "C:\Qt\6.10.2\msvc2022_64\bin;C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;C:\Program Files (x86)\Inno Setup 6;" + $env:PATH'
+    - cmake --version
+    - windeployqt --version
+    - '$repoIscc = Join-Path $pwd "tools\\windows\\inno\\ISCC.exe"; if (Test-Path $repoIscc) { Write-Host "Bundled Inno Setup compiler detected: $repoIscc" } elseif ((Get-Command ISCC.exe -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") -or (Test-Path "C:\Program Files\Inno Setup 6\ISCC.exe")) { Write-Host "System Inno Setup compiler detected." } else { throw "Inno Setup compiler not found. Provide tools/windows/inno/ISCC.exe or install Inno Setup on the runner." }'
+  script:
+    # Step 1: 构建
+    - cmake -B build -DCMAKE_BUILD_TYPE="$env:BUILD_TYPE" -DCMAKE_PREFIX_PATH="C:\Qt\6.10.2\msvc2022_64" -DOPENSSL_ROOT_DIR="C:\Qt\Tools\OpenSSLv3\Win_x64"
+    - cmake --build build --config "$env:BUILD_TYPE" -j $env:NUMBER_OF_PROCESSORS
+    # Step 2: 打包安装器 (优先使用仓库内 tools/windows，找不到再自动发现系统依赖)
+    - powershell -ExecutionPolicy Bypass -File scripts/package_win.ps1
+  artifacts:
+    name: wekey-skf-windows-amd64-setup-$CI_COMMIT_SHORT_SHA
+    paths:
+      - wekey-skf-windows-amd64-setup.exe
+    expire_in: 30 days
