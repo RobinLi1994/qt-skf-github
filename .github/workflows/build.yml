@@ -32,7 +32,7 @@ jobs:
           version: ${{ env.QT_VERSION }}
           host: mac
           target: desktop
-          modules: qthttpserver
+          modules: qthttpserver qtwebsockets
 
       - name: Install packaging dependencies
         shell: bash
