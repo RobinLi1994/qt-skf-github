@@ -1,0 +1,87 @@
+name: Package macOS ARM64
+
+on:
+  workflow_dispatch:
+
+env:
+  QT_VERSION: "6.10.2"
+  BUILD_TYPE: "Release"
+  PKG_ARCH: "arm64"
+
+jobs:
+  package-macos-arm64:
+    name: Build and package macOS arm64
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore CMake dependency cache
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: macos-arm64-cmake-deps-${{ hashFiles('CMakeLists.txt', 'src/**/CMakeLists.txt', 'DEPENDENCIES.md') }}
+          restore-keys: |
+            macos-arm64-cmake-deps-
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          modules: qthttpserver
+
+      - name: Install packaging dependencies
+        shell: bash
+        run: |
+          export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/sbin" >> "$GITHUB_PATH"
+          brew install create-dmg openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+          cmake --version
+          macdeployqt -version
+          command -v create-dmg
+
+      - name: Configure
+        shell: bash
+        run: |
+          qt_prefix=""
+          if [ -n "${QT_ROOT_DIR:-}" ]; then
+            qt_prefix="${QT_ROOT_DIR}"
+          elif [ -n "${Qt6_DIR:-}" ]; then
+            qt_prefix="$(cd "${Qt6_DIR}/../.." && pwd)"
+          fi
+
+          cmake_args=(
+            -B build
+            -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+            -DOPENSSL_ROOT_DIR="${OPENSSL_ROOT_DIR}"
+          )
+
+          if [ -n "${qt_prefix}" ]; then
+            cmake_args+=(-DCMAKE_PREFIX_PATH="${qt_prefix}")
+          fi
+
+          cmake "${cmake_args[@]}"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Package macOS arm64 DMG
+        shell: bash
+        env:
+          CI: "true"
+        run: bash scripts/package_mac_arm.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wekey-skf-macos-arm64-${{ github.sha }}
+          path: wekey-skf-macos-arm64.dmg
+          if-no-files-found: error
