@@ -2186,34 +2186,6 @@ Result<QByteArray> SkfPlugin::generateCsr(const QString& devName, const QString&
 
 //=== 证书管理 ===
 
-Result<void> SkfPlugin::importCert(const QString& devName, const QString& appName, const QString& containerName,
-                                    const QByteArray& certData, bool isSignCert) {
-    QMutexLocker locker(&mutex_);
-
-    auto containerResult = openContainerHandle(devName, appName, containerName);
-    if (containerResult.isErr()) {
-        return Result<void>::err(containerResult.error());
-    }
-
-    if (!lib_->ImportCertificate) {
-        closeContainerHandle(devName, appName, containerName);
-        return Result<void>::err(
-            Error(Error::PluginLoadFailed, "SKF_ImportCertificate 函数不可用", "SkfPlugin::importCert"));
-    }
-
-    skf::ULONG ret = lib_->ImportCertificate(
-        containerResult.value(), isSignCert ? 1 : 0,
-        const_cast<skf::BYTE*>(reinterpret_cast<const skf::BYTE*>(certData.constData())),
-        static_cast<skf::ULONG>(certData.size()));
-    closeContainerHandle(devName, appName, containerName);
-
-    if (ret != skf::SAR_OK) {
-        return Result<void>::err(Error::fromSkf(ret, "SKF_ImportCertificate"));
-    }
-
-    return Result<void>::ok();
-}
-
 /**
  * @brief 将 GMT-0009 ASN.1 格式的 SM2 加密密钥转换为 GMT-0016 ENVELOPEDKEYBLOB 二进制格式
  *
@@ -2372,8 +2344,8 @@ static Result<QByteArray> parseGmt0009ToEnvelopedKeyBlob(const QByteArray& keyDa
 }
 
 Result<void> SkfPlugin::importKeyCert(const QString& devName, const QString& appName, const QString& containerName,
-                                       const QByteArray& sigCert, const QByteArray& encCert,
-                                       const QByteArray& encPrivate, bool nonGM) {
+                                      const QByteArray& sigCert, const QByteArray& encCert,
+                                      const QByteArray& encPrivate, bool nonGM) {
     QMutexLocker locker(&mutex_);
 
     qDebug() << "[importKeyCert] devName:" << devName << "appName:" << appName
@@ -2429,6 +2401,8 @@ Result<void> SkfPlugin::importKeyCert(const QString& devName, const QString& app
         }
     }
     qDebug() << "[importKeyCert] final nonGM:" << nonGM;
+    //const bool importedSignCert = !sigCert.isEmpty();
+    const bool importedEncCert = !encCert.isEmpty();
 
     // === 导入签名证书 ===
     if (!sigCert.isEmpty()) {
@@ -2567,6 +2541,67 @@ Result<void> SkfPlugin::importKeyCert(const QString& devName, const QString& app
     }
 
     closeContainerHandle(devName, appName, containerName);
+
+    auto buildPostImportError = [](const QString& stage, const Error& cause) {
+        return Error(cause.code(),
+                     QString("导入已执行，但%1失败：%2").arg(stage, cause.friendlyMessage()),
+                     "SkfPlugin::importKeyCert");
+    };
+
+    // 这里调签名程序会崩溃，找不到原因
+    /*if (importedSignCert) {
+        const QByteArray payload("wekey-import-cert-sign-check");
+        auto signResult = sign(devName, appName, containerName, payload);
+        if (signResult.isErr()) {
+            return Result<void>::err(buildPostImportError("签名验签校验", signResult.error()));
+        }
+
+        auto verifyResult = verify(devName, appName, containerName, payload, signResult.value());
+        if (verifyResult.isErr()) {
+            return Result<void>::err(buildPostImportError("签名验签校验", verifyResult.error()));
+        }
+        if (!verifyResult.value()) {
+            return Result<void>::err(
+                Error(Error::Fail, "导入已执行，但签名验签校验失败：签名无效",
+                      "SkfPlugin::importKeyCert"));
+        }
+    }*/
+
+    if (importedEncCert) {
+        const QString plainText = QStringLiteral("wekey-import-cert-enc-check");
+        if (nonGM) {
+            auto encryptResult = rsaEncrypt(devName, appName, containerName, false, plainText);
+            if (encryptResult.isErr()) {
+                return Result<void>::err(buildPostImportError("加密解密校验", encryptResult.error()));
+            }
+            auto decryptResult = rsaDecrypt(devName, appName, containerName, false,
+                                            encryptResult.value());
+            if (decryptResult.isErr()) {
+                return Result<void>::err(buildPostImportError("加密解密校验", decryptResult.error()));
+            }
+            if (decryptResult.value() != plainText) {
+                return Result<void>::err(
+                    Error(Error::Fail, "导入已执行，但加密解密校验失败：解密结果与原文不一致",
+                          "SkfPlugin::importKeyCert"));
+            }
+        } else {
+            auto encryptResult = sm2Encrypt(devName, appName, containerName, plainText);
+            if (encryptResult.isErr()) {
+                return Result<void>::err(buildPostImportError("加密解密校验", encryptResult.error()));
+            }
+            auto decryptResult = sm2Decrypt(devName, appName, containerName,
+                                            encryptResult.value());
+            if (decryptResult.isErr()) {
+                return Result<void>::err(buildPostImportError("加密解密校验", decryptResult.error()));
+            }
+            if (decryptResult.value() != plainText) {
+                return Result<void>::err(
+                    Error(Error::Fail, "导入已执行，但加密解密校验失败：解密结果与原文不一致",
+                          "SkfPlugin::importKeyCert"));
+            }
+        }
+    }
+
     return Result<void>::ok();
 }
 

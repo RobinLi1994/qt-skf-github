@@ -103,12 +103,6 @@ public:
             Error(Error::Fail, "not implemented", "FakeDriverPlugin::generateCsr"));
     }
 
-    Result<void> importCert(const QString&, const QString&, const QString&, const QByteArray&,
-                            bool) override {
-        return Result<void>::err(
-            Error(Error::Fail, "not implemented", "FakeDriverPlugin::importCert"));
-    }
-
     Result<void> importKeyCert(const QString&, const QString&, const QString&, const QByteArray&,
                                const QByteArray&, const QByteArray&, bool) override {
         return Result<void>::err(

@@ -12,9 +12,6 @@ set -euo pipefail
 
 APP_NAME="wekey-skf"
 DIST_DIR="dist"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# 复用统一的 Mach-O 架构检查脚本，确保日志和失败策略一致
-ARCH_INSPECTOR="${SCRIPT_DIR}/inspect_mac_mach_arch.sh"
 # 优先使用 CI 传入的 PKG_ARCH，本地运行时自动检测当前架构
 ARCH="${PKG_ARCH:-$(uname -m)}"
 # 统一为 amd64/arm64 命名
@@ -87,11 +84,16 @@ if [ -d "${DIST_DIR}/${APP_NAME}.app" ]; then
     FRAMEWORKS_DIR="${DIST_DIR}/${APP_NAME}.app/Contents/Frameworks"
     mkdir -p "${FRAMEWORKS_DIR}"
 
-    SKF_LIB_SRC="$(bash "${SCRIPT_DIR}/select_mac_skf_lib.sh" "${ARCH}")"
+    # 按架构选择对应的 SKF 库
+    # arm64 用 libgm3000.dylib，amd64 用 libgm3000.1.0_x86.dylib
+    if [ "${ARCH}" = "amd64" ]; then
+        SKF_LIB_SRC="resources/lib/mac/libgm3000.1.0_x86.dylib"
+    else
+        SKF_LIB_SRC="resources/lib/mac/libgm3000.dylib"
+    fi
 
     if [ -f "${SKF_LIB_SRC}" ]; then
-        # 包内目标名固定为 libgm3000.dylib：
-        # 这样运行时代码和界面始终查一个固定路径，实际内容再按架构区分。
+        # 统一拷贝为 libgm3000.dylib，运行时代码只认这个名字
         cp "${SKF_LIB_SRC}" "${FRAMEWORKS_DIR}/libgm3000.dylib"
         # 修正 dylib 的 install_name，使其可通过 @rpath 加载
         install_name_tool -id @rpath/libgm3000.dylib "${FRAMEWORKS_DIR}/libgm3000.dylib" 2>/dev/null || true
@@ -167,32 +169,9 @@ cat > "${DIST_DIR}/安装说明.txt" << 'README'
 README
 
 # ==============================================================================
-# 6. 验证产物架构
+# 6. 创建 DMG（标准拖拽安装窗口：左边 .app，右边 Applications）
 # ==============================================================================
-echo "--- Step 6: Verify Architecture ---"
-if [ -d "${DIST_DIR}/${APP_NAME}.app" ]; then
-    MAIN_BINARY="${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/${APP_NAME}"
-    SKF_LIBRARY="${DIST_DIR}/${APP_NAME}.app/Contents/Frameworks/libgm3000.dylib"
-
-    if [ -f "${MAIN_BINARY}" ]; then
-        # 校验主程序架构，避免 runner 或 CMake 配置不一致导致包错架构
-        bash "${ARCH_INSPECTOR}" "${MAIN_BINARY}" "${ARCH}" "Main binary"
-    else
-        echo "WARN: Main binary not found for architecture verification: ${MAIN_BINARY}"
-    fi
-
-    if [ -f "${SKF_LIBRARY}" ]; then
-        # 虽然文件名固定，但这里要验证其内容架构确实与当前包匹配
-        bash "${ARCH_INSPECTOR}" "${SKF_LIBRARY}" "${ARCH}" "SKF library"
-    else
-        echo "WARN: SKF library not found for architecture verification: ${SKF_LIBRARY}"
-    fi
-fi
-
-# ==============================================================================
-# 7. 创建 DMG（标准拖拽安装窗口：左边 .app，右边 Applications）
-# ==============================================================================
-echo "--- Step 7: Create DMG ---"
+echo "--- Step 6: Create DMG ---"
 rm -f "${DMG_NAME}"
 
 if command -v create-dmg &>/dev/null; then

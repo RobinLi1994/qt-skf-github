@@ -1,6 +1,10 @@
 #include <QtTest>
 
 #include <memory>
+#include <type_traits>
+
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include "common/Error.h"
 #include "core/crypto/CertService.h"
@@ -33,6 +37,78 @@ public:
 private:
     QtMessageHandler previous_ = nullptr;
 };
+
+template <typename T, typename = void>
+struct HasImportCert : std::false_type {};
+
+template <typename T>
+struct HasImportCert<T, std::void_t<decltype(&T::importCert)>> : std::true_type {};
+
+static_assert(!HasImportCert<IDriverPlugin>::value,
+              "IDriverPlugin should only expose importKeyCert");
+
+using EvpPkeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+using X509Ptr = std::unique_ptr<X509, decltype(&X509_free)>;
+using EvpPkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)>;
+
+struct TestCertMaterial {
+    QByteArray certDer;
+};
+
+QByteArray encodeX509ToDer(X509* cert) {
+    const int len = i2d_X509(cert, nullptr);
+    if (len <= 0) {
+        return {};
+    }
+    QByteArray der(len, Qt::Uninitialized);
+    unsigned char* p = reinterpret_cast<unsigned char*>(der.data());
+    i2d_X509(cert, &p);
+    return der;
+}
+
+EvpPkeyPtr generateRsaKeyPair() {
+    EvpPkeyCtxPtr ctx(EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr), &EVP_PKEY_CTX_free);
+    if (!ctx || EVP_PKEY_keygen_init(ctx.get()) != 1 ||
+        EVP_PKEY_CTX_set_rsa_keygen_bits(ctx.get(), 2048) != 1) {
+        return EvpPkeyPtr(nullptr, &EVP_PKEY_free);
+    }
+
+    EVP_PKEY* rawKey = nullptr;
+    if (EVP_PKEY_keygen(ctx.get(), &rawKey) != 1) {
+        return EvpPkeyPtr(nullptr, &EVP_PKEY_free);
+    }
+    return EvpPkeyPtr(rawKey, &EVP_PKEY_free);
+}
+
+TestCertMaterial makeRsaCertMaterial(long notBeforeOffsetSeconds = -60,
+                                     long notAfterOffsetSeconds = 3600) {
+    auto key = generateRsaKeyPair();
+    if (!key) {
+        return {};
+    }
+
+    X509Ptr cert(X509_new(), &X509_free);
+    if (!cert) {
+        return {};
+    }
+
+    X509_set_version(cert.get(), 2);
+    ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), 1);
+    X509_gmtime_adj(X509_getm_notBefore(cert.get()), notBeforeOffsetSeconds);
+    X509_gmtime_adj(X509_getm_notAfter(cert.get()), notAfterOffsetSeconds);
+    X509_set_pubkey(cert.get(), key.get());
+
+    X509_NAME* subject = X509_get_subject_name(cert.get());
+    X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC,
+                               reinterpret_cast<const unsigned char*>("unit-test"), -1, -1, 0);
+    X509_set_issuer_name(cert.get(), subject);
+
+    if (X509_sign(cert.get(), key.get(), EVP_sha256()) <= 0) {
+        return {};
+    }
+
+    return {encodeX509ToDer(cert.get())};
+}
 
 class FakeDriverPlugin final : public IDriverPlugin {
 public:
@@ -104,8 +180,7 @@ public:
     }
 
     Result<QList<ContainerInfo>> enumContainers(const QString&, const QString&) override {
-        return Result<QList<ContainerInfo>>::err(
-            Error(Error::Fail, "not implemented", "FakeDriverPlugin::enumContainers"));
+        return Result<QList<ContainerInfo>>::ok(containers);
     }
 
     Result<void> createContainer(const QString&, const QString&, const QString&) override {
@@ -130,16 +205,79 @@ public:
             Error(Error::Fail, "not implemented", "FakeDriverPlugin::generateCsr"));
     }
 
-    Result<void> importCert(const QString&, const QString&, const QString&, const QByteArray&,
-                            bool) override {
-        return Result<void>::err(
-            Error(Error::Fail, "not implemented", "FakeDriverPlugin::importCert"));
-    }
+    Result<void> importKeyCert(const QString&, const QString&, const QString&, const QByteArray& sigCert,
+                               const QByteArray& encCert, const QByteArray&, bool) override {
+        importKeyCertCalled = true;
+        if (importKeyCertResult.isErr()) {
+            return importKeyCertResult;
+        }
 
-    Result<void> importKeyCert(const QString&, const QString&, const QString&, const QByteArray&,
-                               const QByteArray&, const QByteArray&, bool) override {
-        return Result<void>::err(
-            Error(Error::Fail, "not implemented", "FakeDriverPlugin::importKeyCert"));
+        auto buildPostImportError = [](const QString& stage, const Error& cause) {
+            return Error(cause.code(),
+                         QString("导入已执行，但%1失败：%2").arg(stage, cause.friendlyMessage()),
+                         "FakeDriverPlugin::importKeyCert");
+        };
+
+        const QString devName = QStringLiteral("dev-1");
+        const QString appName = QStringLiteral("app-1");
+        const QString containerName = QStringLiteral("container-1");
+
+        if (!sigCert.isEmpty()) {
+            const QByteArray payload("wekey-import-cert-sign-check");
+            auto signOutcome = sign(devName, appName, containerName, payload);
+            if (signOutcome.isErr()) {
+                return Result<void>::err(buildPostImportError("签名验签校验", signOutcome.error()));
+            }
+            auto verifyOutcome = verify(devName, appName, containerName, payload, signOutcome.value());
+            if (verifyOutcome.isErr()) {
+                return Result<void>::err(buildPostImportError("签名验签校验", verifyOutcome.error()));
+            }
+            if (!verifyOutcome.value()) {
+                return Result<void>::err(
+                    Error(Error::Fail, "导入已执行，但签名验签校验失败：签名无效",
+                          "FakeDriverPlugin::importKeyCert"));
+            }
+        }
+
+        if (!encCert.isEmpty()) {
+            const QString plainText = QStringLiteral("wekey-import-cert-enc-check");
+            const auto keyType = containers.isEmpty()
+                ? ContainerInfo::KeyType::Unknown
+                : containers.first().keyType;
+            if (keyType == ContainerInfo::KeyType::RSA) {
+                auto encryptOutcome = rsaEncrypt(devName, appName, containerName, false, plainText);
+                if (encryptOutcome.isErr()) {
+                    return Result<void>::err(buildPostImportError("加密解密校验", encryptOutcome.error()));
+                }
+                auto decryptOutcome = rsaDecrypt(devName, appName, containerName, false,
+                                                 encryptOutcome.value());
+                if (decryptOutcome.isErr()) {
+                    return Result<void>::err(buildPostImportError("加密解密校验", decryptOutcome.error()));
+                }
+                if (decryptOutcome.value() != plainText) {
+                    return Result<void>::err(
+                        Error(Error::Fail, "导入已执行，但加密解密校验失败：解密结果与原文不一致",
+                              "FakeDriverPlugin::importKeyCert"));
+                }
+            } else if (keyType == ContainerInfo::KeyType::SM2) {
+                auto encryptOutcome = sm2Encrypt(devName, appName, containerName, plainText);
+                if (encryptOutcome.isErr()) {
+                    return Result<void>::err(buildPostImportError("加密解密校验", encryptOutcome.error()));
+                }
+                auto decryptOutcome = sm2Decrypt(devName, appName, containerName,
+                                                 encryptOutcome.value());
+                if (decryptOutcome.isErr()) {
+                    return Result<void>::err(buildPostImportError("加密解密校验", decryptOutcome.error()));
+                }
+                if (decryptOutcome.value() != plainText) {
+                    return Result<void>::err(
+                        Error(Error::Fail, "导入已执行，但加密解密校验失败：解密结果与原文不一致",
+                              "FakeDriverPlugin::importKeyCert"));
+                }
+            }
+        }
+
+        return Result<void>::ok();
     }
 
     Result<QByteArray> exportCert(const QString&, const QString&, const QString&, bool) override {
@@ -153,14 +291,14 @@ public:
     }
 
     Result<QByteArray> sign(const QString&, const QString&, const QString&, const QByteArray&) override {
-        return Result<QByteArray>::err(
-            Error(Error::Fail, "not implemented", "FakeDriverPlugin::sign"));
+        signCalled = true;
+        return signResult;
     }
 
     Result<bool> verify(const QString&, const QString&, const QString&, const QByteArray&,
                         const QByteArray&) override {
-        return Result<bool>::err(
-            Error(Error::Fail, "not implemented", "FakeDriverPlugin::verify"));
+        verifyCalled = true;
+        return verifyResult;
     }
 
     Result<QStringList> enumFiles(const QString&, const QString&) override {
@@ -264,12 +402,19 @@ public:
     bool rsaDecryptCalled = false;
     bool sm2EncryptCalled = false;
     bool sm2DecryptCalled = false;
+    bool signCalled = false;
+    bool verifyCalled = false;
+    bool importKeyCertCalled = false;
     bool lastUseSignKey = false;
     QString lastDevName;
     QString lastAppName;
     QString lastContainerName;
     QString lastPlainText;
     QString lastEncryptedData;
+    QList<ContainerInfo> containers;
+    Result<void> importKeyCertResult = Result<void>::ok();
+    Result<QByteArray> signResult = Result<QByteArray>::ok(QByteArray("signature"));
+    Result<bool> verifyResult = Result<bool>::ok(true);
     Result<EncDecTestResult> rsaResult = Result<EncDecTestResult>::ok(
         EncDecTestResult{"plain", "cipher", "plain", true});
     Result<EncDecTestResult> sm2Result = Result<EncDecTestResult>::ok(
@@ -382,6 +527,114 @@ private slots:
         QCOMPARE(result.value().encryptedData, expected.encryptedData);
         QCOMPARE(result.value().decryptedData, expected.decryptedData);
         QCOMPARE(result.value().consistent, expected.consistent);
+    }
+
+    void importKeyCert_withExpiredSignCert_stillRunsPostChecks() {
+        auto plugin = std::make_shared<FakeDriverPlugin>();
+        ContainerInfo container;
+        container.containerName = QStringLiteral("container-1");
+        container.keyGenerated = true;
+        container.keyType = ContainerInfo::KeyType::RSA;
+        container.signKeyAvailable = true;
+        container.encKeyAvailable = true;
+        plugin->containers = {container};
+
+        auto& pluginManager = PluginManager::instance();
+        QVERIFY(pluginManager.registerPluginInstance(kPluginName, plugin).isOk());
+        QVERIFY(pluginManager.setActivePlugin(kPluginName, false).isOk());
+
+        const TestCertMaterial expired = makeRsaCertMaterial(-7200, -3600);
+        QVERIFY(!expired.certDer.isEmpty());
+
+        auto result = CertService::instance().importKeyCert(
+            "dev-1", "app-1", "container-1", expired.certDer, {}, {}, false);
+
+        QVERIFY(result.isOk());
+        QVERIFY(plugin->importKeyCertCalled);
+        QVERIFY(plugin->signCalled);
+        QVERIFY(plugin->verifyCalled);
+    }
+
+    void importKeyCert_withExpiredEncCert_stillRunsPostChecks() {
+        auto plugin = std::make_shared<FakeDriverPlugin>();
+        ContainerInfo container;
+        container.containerName = QStringLiteral("container-1");
+        container.keyGenerated = true;
+        container.keyType = ContainerInfo::KeyType::RSA;
+        container.signKeyAvailable = true;
+        container.encKeyAvailable = true;
+        plugin->containers = {container};
+
+        const TestCertMaterial expired = makeRsaCertMaterial(-7200, -3600);
+        QVERIFY(!expired.certDer.isEmpty());
+        plugin->rsaDecryptResult = Result<QString>::ok(QStringLiteral("wekey-import-cert-enc-check"));
+
+        auto& pluginManager = PluginManager::instance();
+        QVERIFY(pluginManager.registerPluginInstance(kPluginName, plugin).isOk());
+        QVERIFY(pluginManager.setActivePlugin(kPluginName, false).isOk());
+
+        auto result = CertService::instance().importKeyCert(
+            "dev-1", "app-1", "container-1", {}, expired.certDer, {}, false);
+
+        QVERIFY(result.isOk());
+        QVERIFY(plugin->importKeyCertCalled);
+        QVERIFY(plugin->rsaEncryptCalled);
+        QVERIFY(plugin->rsaDecryptCalled);
+    }
+
+    void importKeyCert_withSignVerifyFailure_returnsErrAfterImport() {
+        auto plugin = std::make_shared<FakeDriverPlugin>();
+        ContainerInfo container;
+        container.containerName = QStringLiteral("container-1");
+        container.keyGenerated = true;
+        container.keyType = ContainerInfo::KeyType::RSA;
+        container.signKeyAvailable = true;
+        container.encKeyAvailable = true;
+        plugin->containers = {container};
+
+        const TestCertMaterial signCert = makeRsaCertMaterial();
+        QVERIFY(!signCert.certDer.isEmpty());
+        plugin->verifyResult = Result<bool>::ok(false);
+
+        auto& pluginManager = PluginManager::instance();
+        QVERIFY(pluginManager.registerPluginInstance(kPluginName, plugin).isOk());
+        QVERIFY(pluginManager.setActivePlugin(kPluginName, false).isOk());
+
+        auto result = CertService::instance().importKeyCert(
+            "dev-1", "app-1", "container-1", signCert.certDer, {}, {}, false);
+
+        QVERIFY(result.isErr());
+        QVERIFY(plugin->importKeyCertCalled);
+        QVERIFY(plugin->signCalled);
+        QVERIFY(plugin->verifyCalled);
+    }
+
+    void importKeyCert_withEncDecryptFailure_returnsErrAfterImport() {
+        auto plugin = std::make_shared<FakeDriverPlugin>();
+        ContainerInfo container;
+        container.containerName = QStringLiteral("container-1");
+        container.keyGenerated = true;
+        container.keyType = ContainerInfo::KeyType::RSA;
+        container.signKeyAvailable = true;
+        container.encKeyAvailable = true;
+        plugin->containers = {container};
+
+        const TestCertMaterial encCert = makeRsaCertMaterial();
+        QVERIFY(!encCert.certDer.isEmpty());
+        plugin->rsaDecryptResult = Result<QString>::err(
+            Error(Error::Fail, "decrypt failed", "FakeDriverPlugin::rsaDecrypt"));
+
+        auto& pluginManager = PluginManager::instance();
+        QVERIFY(pluginManager.registerPluginInstance(kPluginName, plugin).isOk());
+        QVERIFY(pluginManager.setActivePlugin(kPluginName, false).isOk());
+
+        auto result = CertService::instance().importKeyCert(
+            "dev-1", "app-1", "container-1", {}, encCert.certDer, {}, false);
+
+        QVERIFY(result.isErr());
+        QVERIFY(plugin->importKeyCertCalled);
+        QVERIFY(plugin->rsaEncryptCalled);
+        QVERIFY(plugin->rsaDecryptCalled);
     }
 
     void rsaEncrypt_delegatesToPlugin() {

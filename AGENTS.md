@@ -22,6 +22,7 @@
 - 语言标准为 C++17（见 `CMakeLists.txt`）。
 - 非 MSVC 编译器启用严格告警：`-Wall -Wextra -Wpedantic -Werror`。
 - 使用仓库内 `.clang-format`（Google 基础风格、4 空格缩进、100 列限制、禁用 Tab）。
+- 注释规范：新增或修改代码时，若业务意图、协议约束、数据格式、会话假设或兼容性处理不直观，必须补充简洁注释，优先说明“为什么这样做”与关键约束，避免只写逐行翻译式注释。
 - 命名遵循现有代码模式：
   - 类型/类名：`PascalCase`（例如 `DeviceService`、`MainWindow`）。
   - 方法/变量：`camelCase`。

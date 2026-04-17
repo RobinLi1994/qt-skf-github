@@ -8,8 +8,8 @@
 #pragma once
 
 #include <QMap>
-#include <QMutex>
 #include <QObject>
+#include <QRecursiveMutex>
 #include <QSet>
 #include <QString>
 #include <memory>
@@ -114,10 +114,8 @@ public:
     Result<QByteArray> generateCsr(const QString& devName, const QString& appName, const QString& containerName,
                                     const QVariantMap& args) override;
 
-    //--- 证书管理 (4 个方法) ---
+    //--- 证书管理 (3 个方法) ---
 
-    Result<void> importCert(const QString& devName, const QString& appName, const QString& containerName,
-                            const QByteArray& certData, bool isSignCert) override;
     Result<void> importKeyCert(const QString& devName, const QString& appName, const QString& containerName,
                                const QByteArray& sigCert, const QByteArray& encCert,
                                const QByteArray& encPrivate, bool nonGM) override;
@@ -270,7 +268,7 @@ private:
     QMap<QString, HandleInfo> handles_;  ///< 句柄映射表
     QMap<QString, LoginInfo> loginCache_;  ///< 登录凭据缓存，key = "devName/appName"
     QMap<QString, DeviceInfo> devInfoCache_;  ///< 设备信息缓存，key = deviceName
-    mutable QMutex mutex_;  ///< 线程安全互斥锁
+    mutable QRecursiveMutex mutex_;  ///< 递归锁，允许 import 内部复用公开校验入口
 };
 
 }  // namespace wekey

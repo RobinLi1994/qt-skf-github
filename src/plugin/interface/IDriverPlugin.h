@@ -219,18 +219,6 @@ public:
     //=== 证书管理 ===
 
     /**
-     * @brief 导入证书
-     * @param devName 设备名称
-     * @param appName 应用名称
-     * @param containerName 容器名称
-     * @param certData 证书数据
-     * @param isSignCert 是否为签名证书
-     * @return 操作结果
-     */
-    virtual Result<void> importCert(const QString& devName, const QString& appName, const QString& containerName,
-                                    const QByteArray& certData, bool isSignCert) = 0;
-
-    /**
      * @brief 统一导入证书和密钥（对应 Go 的 ImportCert）
      *
      * 在单个设备/容器会话中完成签名证书、加密证书、加密私钥的导入。

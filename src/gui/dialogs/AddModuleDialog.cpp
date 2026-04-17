@@ -16,7 +16,6 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QSysInfo>
 #include <QVBoxLayout>
 
 #include <ElaComboBox.h>
@@ -28,28 +27,6 @@
 #include "log/Logger.h"
 
 namespace wekey {
-
-namespace {
-
-QStringList macBuiltinLibNames(const QString& baseName) {
-    QStringList libNames;
-    if (baseName == QStringLiteral("gm3000")) {
-        // 开发态优先展示当前架构对应的真实库名，便于排查到底用了哪一份驱动。
-        // 打包态仍统一查 Frameworks/libgm3000.dylib，因此这里只影响开发目录搜索顺序。
-        const QString arch = QSysInfo::currentCpuArchitecture();
-        if (arch == QStringLiteral("arm64") || arch == QStringLiteral("aarch64")) {
-            libNames << QStringLiteral("libgm3000.1.0_arm64.dylib");
-        } else if (arch == QStringLiteral("x86_64") || arch == QStringLiteral("amd64")) {
-            libNames << QStringLiteral("libgm3000.1.0_x86.dylib");
-        }
-    }
-
-    libNames << ("lib" + baseName + ".dylib");
-    libNames.removeDuplicates();
-    return libNames;
-}
-
-}  // namespace
 
 AddModuleDialog::AddModuleDialog(QWidget* parent) : QDialog(parent) {
     setupUi();
@@ -68,33 +45,37 @@ QList<AddModuleDialog::BuiltinDriver> AddModuleDialog::builtinDrivers() const {
 QString AddModuleDialog::findBuiltinLibPath(const QString& baseName) const {
     QString appDir = QCoreApplication::applicationDirPath();
 
+#ifdef Q_OS_MACOS
+    QString libName = "lib" + baseName + ".dylib";
+#elif defined(Q_OS_WIN)
+    // Windows 下某些驱动可能有 mtoken_ 前缀，优先尝试原始名
+    QString libName = baseName + ".dll";
+#else
+    QString libName = "lib" + baseName + ".so";
+#endif
+
+    // 按优先级搜索内置 SKF 库位置（与 Application::findBuiltinLibPath 逻辑一致）
     QStringList searchPaths;
 
 #ifdef Q_OS_MACOS
-    const QString packagedLibName = "lib" + baseName + ".dylib";
-    const QStringList developmentLibNames = macBuiltinLibNames(baseName);
-    // 打包后的 .app 始终先查固定路径：
-    // 不论 arm64 还是 x86_64，包内最终文件名都统一为 Frameworks/libgm3000.dylib。
-    searchPaths << appDir + "/../Frameworks/" + packagedLibName;
-    // 开发态再按“当前架构专用库 -> 通用库”的顺序回退，保证界面显示更准确。
-    for (const auto& libName : developmentLibNames) {
-        searchPaths << appDir + "/../../../../../lib/" + libName;
-        searchPaths << appDir + "/../../lib/" + libName;
-    }
-#elif defined(Q_OS_WIN)
-    // Windows 下某些驱动可能有 mtoken_ 前缀，优先尝试原始名
-    const QString libName = baseName + ".dll";
+    // macOS 打包环境: wekey-skf.app/Contents/MacOS/../Frameworks/
+    searchPaths << appDir + "/../Frameworks/" + libName;
+#endif
+
+#ifdef Q_OS_WIN
     // Windows 打包环境: exe 同目录
     searchPaths << appDir + "/" + libName;
     // Windows 下尝试 mtoken_ 前缀
     searchPaths << appDir + "/mtoken_" + baseName + ".dll";
-    searchPaths << appDir + "/../../../../../lib/" + libName;
-    searchPaths << appDir + "/../../lib/" + libName;
-#else
-    const QString libName = "lib" + baseName + ".so";
-    searchPaths << appDir + "/../../../../../lib/" + libName;
-    searchPaths << appDir + "/../../lib/" + libName;
 #endif
+
+    // 开发环境: build/lib/
+    // macOS .app bundle: appDir = build/src/app/wekey-skf.app/Contents/MacOS
+    //   -> ../../../../../lib = build/lib
+    // Linux/Windows 非 bundle: appDir = build/src/app
+    //   -> ../../lib = build/lib
+    searchPaths << appDir + "/../../../../../lib/" + libName;
+    searchPaths << appDir + "/../../lib/" + libName;
 
     for (const auto& candidate : searchPaths) {
         QString absPath = QDir(candidate).absolutePath();

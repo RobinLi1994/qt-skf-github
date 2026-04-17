@@ -63,16 +63,6 @@ Result<QByteArray> CertService::generateCsr(const QString& devName, const QStrin
     return plugin->generateCsr(devName, appName, containerName, args);
 }
 
-Result<void> CertService::importCert(const QString& devName, const QString& appName, const QString& containerName,
-                                      const QByteArray& certData, bool isSignCert) {
-    auto plugin = PluginManager::instance().activePluginShared();
-    if (!plugin) {
-        return Result<void>::err(
-            Error(Error::NoActiveModule, "驱动模块未激活", "CertService::importCert"));
-    }
-    return plugin->importCert(devName, appName, containerName, certData, isSignCert);
-}
-
 Result<void> CertService::importKeyCert(const QString& devName, const QString& appName, const QString& containerName,
                                          const QByteArray& sigCert, const QByteArray& encCert,
                                          const QByteArray& encPrivate, bool nonGM) {
@@ -81,6 +71,9 @@ Result<void> CertService::importKeyCert(const QString& devName, const QString& a
         return Result<void>::err(
             Error(Error::NoActiveModule, "驱动模块未激活", "CertService::importKeyCert"));
     }
+
+    // 导入后的功能校验必须与真实导入处于同一个插件锁内，
+    // 否则中间会暴露出可被其它接口打断的窗口期。
     return plugin->importKeyCert(devName, appName, containerName, sigCert, encCert, encPrivate, nonGM);
 }
 

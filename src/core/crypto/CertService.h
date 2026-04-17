@@ -27,8 +27,6 @@ public:
                                        const QString& containerName, const QString& keyType);
     Result<QByteArray> generateCsr(const QString& devName, const QString& appName, const QString& containerName,
                                     const QVariantMap& args);
-    Result<void> importCert(const QString& devName, const QString& appName, const QString& containerName,
-                            const QByteArray& certData, bool isSignCert);
     Result<void> importKeyCert(const QString& devName, const QString& appName, const QString& containerName,
                                const QByteArray& sigCert, const QByteArray& encCert,
                                const QByteArray& encPrivate, bool nonGM);
