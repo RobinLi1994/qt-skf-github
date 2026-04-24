@@ -115,8 +115,7 @@ public:
     }
 
     Result<CertInfo> getCertInfo(const QString&, const QString&, const QString&, bool) override {
-        return Result<CertInfo>::err(
-            Error(Error::Fail, "not implemented", "FakeDriverPlugin::getCertInfo"));
+        return certInfoResult;
     }
 
     Result<QByteArray> sign(const QString&, const QString&, const QString&, const QByteArray&) override {
@@ -201,6 +200,8 @@ public:
     QString lastEncryptedData;
     Result<QString> sm2EncryptResult = Result<QString>::ok(QStringLiteral("sm2-cipher"));
     Result<QString> sm2DecryptResult = Result<QString>::ok(QStringLiteral("sm2-plain"));
+    Result<CertInfo> certInfoResult = Result<CertInfo>::err(
+        Error(Error::Fail, "not implemented", "FakeDriverPlugin::getCertInfo"));
 };
 
 }  // namespace wekey::test

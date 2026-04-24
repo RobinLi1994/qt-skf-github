@@ -211,6 +211,15 @@ private:
     QStringList collectCachedDeviceNamesLocked() const;
 
     /**
+     * @brief 判断设备是否仍被已登录应用或子级句柄占用（持锁调用）
+     *
+     * 随机数等无状态接口可以临时直连设备，但若当前设备上仍保留应用登录态、
+     * 应用句柄或容器句柄，就不能再走 closeDevice() 的整棵级联清理，
+     * 否则会把共享会话一并断开。
+     */
+    bool hasActiveDeviceSessionLocked(const QString& devName) const;
+
+    /**
      * @brief 打开容器
      * @param devName 设备名称
      * @param appName 应用名称

@@ -8,19 +8,74 @@
 
 #include "CertDetailDialog.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QScrollArea>
 #include <QTextEdit>
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <ElaIcon.h>
+#include <ElaMessageBar.h>
 #include <ElaPushButton.h>
 
 #include "core/crypto/CertService.h"
 #include "gui/UiHelper.h"
 
 namespace wekey {
+namespace {
+
+class CopyablePemEdit final : public QTextEdit {
+public:
+    explicit CopyablePemEdit(QWidget* parent = nullptr)
+        : QTextEdit(parent)
+        , copyButton_(new QToolButton(viewport())) {
+        setObjectName("certPemEdit");
+        setReadOnly(true);
+        setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+        setCursor(Qt::PointingHandCursor);
+
+        copyButton_->setObjectName("copyCertButton");
+        copyButton_->setIcon(ElaIcon::getInstance()->getElaIcon(ElaIconType::Copy, 14, QColor("#5f6f7a")));
+        copyButton_->setToolTip("复制证书内容");
+        copyButton_->setCursor(Qt::PointingHandCursor);
+        copyButton_->setAutoRaise(true);
+        copyButton_->setFixedSize(24, 24);
+        copyButton_->setStyleSheet(
+            "QToolButton { border: none; border-radius: 4px; background: rgba(255,255,255,0.85); }"
+            "QToolButton:hover { background: #eef7ff; }");
+        connect(copyButton_, &QToolButton::clicked, this, &CopyablePemEdit::copyPem);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QTextEdit::resizeEvent(event);
+        copyButton_->move(viewport()->width() - copyButton_->width() - 8, 8);
+        copyButton_->raise();
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        copyPem();
+        QTextEdit::mousePressEvent(event);
+    }
+
+private:
+    void copyPem() {
+        setProperty("lastCopiedText", toPlainText());
+        QApplication::clipboard()->setText(toPlainText());
+        copyButton_->setToolTip("已复制");
+        setProperty("copyMessageShown", true);
+        ElaMessageBar::success(ElaMessageBarType::TopRight, "复制成功", "证书内容已复制到剪贴板",
+                               2000, window());
+    }
+
+    QToolButton* copyButton_ = nullptr;
+};
+
+}  // namespace
 
 CertDetailDialog::CertDetailDialog(const QString& devName, const QString& appName,
                                    const QString& containerName, QWidget* parent)
@@ -95,6 +150,8 @@ void CertDetailDialog::setupUi(const QString& containerName) {
 }
 
 void CertDetailDialog::addCertSection(QVBoxLayout* layout, const CertInfo& info, bool isSignCert) {
+    const QString serialNumber = info.serialNumber.toUpper();
+
     // 折叠区域容器
     auto* sectionWidget = new QWidget;
     auto* sectionLayout = new QVBoxLayout(sectionWidget);
@@ -123,8 +180,8 @@ void CertDetailDialog::addCertSection(QVBoxLayout* layout, const CertInfo& info,
 
     // 证书 CN + SN 摘要
     QString summary = info.commonName;
-    if (!info.serialNumber.isEmpty()) {
-        summary += QString("  (SN: %1)").arg(info.serialNumber);
+    if (!serialNumber.isEmpty()) {
+        summary += QString("  (SN: %1)").arg(serialNumber);
     }
     auto* summaryLabel = new QLabel(summary);
     summaryLabel->setStyleSheet("QLabel { color: rgba(0,0,0,0.65); font-size: 13px; background: transparent; border: none; }");
@@ -143,7 +200,7 @@ void CertDetailDialog::addCertSection(QVBoxLayout* layout, const CertInfo& info,
     detailLayout->setSpacing(0);
 
     // 信息行
-    addInfoRow(detailLayout, "序列号", info.serialNumber);
+    addInfoRow(detailLayout, "序列号", serialNumber);
     addInfoRow(detailLayout, "主题", info.subjectDn);
     addInfoRow(detailLayout, "通用名称", info.commonName);
     addInfoRow(detailLayout, "颁发者", info.issuerDn);
@@ -180,9 +237,8 @@ void CertDetailDialog::addCertSection(QVBoxLayout* layout, const CertInfo& info,
         pemLabel->setStyleSheet("QLabel { color: rgba(0,0,0,0.65); font-size: 13px; padding-top: 6px; background: transparent; border: none; }");
         pemRow->addWidget(pemLabel);
 
-        auto* pemEdit = new QTextEdit;
+        auto* pemEdit = new CopyablePemEdit;
         pemEdit->setPlainText(info.cert);
-        pemEdit->setReadOnly(true);
         pemEdit->setFixedHeight(160);
         pemEdit->setStyleSheet(
             "QTextEdit {"

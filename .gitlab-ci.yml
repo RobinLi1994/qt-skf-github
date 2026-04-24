@@ -135,7 +135,7 @@ package:windows-amd64:
     - '$repoIscc = Join-Path $pwd "tools\\windows\\inno\\ISCC.exe"; if (Test-Path $repoIscc) { Write-Host "Bundled Inno Setup compiler detected: $repoIscc" } elseif ((Get-Command ISCC.exe -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") -or (Test-Path "C:\Program Files\Inno Setup 6\ISCC.exe")) { Write-Host "System Inno Setup compiler detected." } else { throw "Inno Setup compiler not found. Provide tools/windows/inno/ISCC.exe or install Inno Setup on the runner." }'
   script:
     # Step 1: 构建
-    - cmake -B build -DCMAKE_BUILD_TYPE="$env:BUILD_TYPE" -DCMAKE_PREFIX_PATH="C:\Qt\6.10.2\msvc2022_64" -DOPENSSL_ROOT_DIR="C:\Qt\Tools\OpenSSLv3\Win_x64"
+    - cmake -B build -DCMAKE_BUILD_TYPE="$env:BUILD_TYPE" -DCMAKE_PREFIX_PATH="C:\Qt\6.10.2\msvc2022_64" -DOPENSSL_ROOT_DIR="C:\Qt\Tools\OpenSSLv3\Win_x64" -DENABLE_TESTING=OFF
     - cmake --build build --config "$env:BUILD_TYPE" -j $env:NUMBER_OF_PROCESSORS
     # Step 2: 打包安装器 (优先使用仓库内 tools/windows，找不到再自动发现系统依赖)
     - powershell -ExecutionPolicy Bypass -File scripts/package_win.ps1

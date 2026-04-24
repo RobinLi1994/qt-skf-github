@@ -388,6 +388,29 @@ QStringList SkfPlugin::collectCachedDeviceNamesLocked() const {
     return result;
 }
 
+bool SkfPlugin::hasActiveDeviceSessionLocked(const QString& devName) const {
+    if (devName.isEmpty()) {
+        return false;
+    }
+
+    const QString prefix = devName + "/";
+
+    for (auto it = loginCache_.cbegin(); it != loginCache_.cend(); ++it) {
+        if (it.key().startsWith(prefix)) {
+            return true;
+        }
+    }
+
+    for (auto it = handles_.cbegin(); it != handles_.cend(); ++it) {
+        const QString& key = it.key();
+        if (key.startsWith(prefix) && key.count('/') >= 1) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 Result<skf::HCONTAINER> SkfPlugin::openContainerHandle(const QString& devName, const QString& appName,
                                                         const QString& containerName) {
     QString key = makeKey(devName, appName, containerName);
@@ -2401,7 +2424,7 @@ Result<void> SkfPlugin::importKeyCert(const QString& devName, const QString& app
         }
     }
     qDebug() << "[importKeyCert] final nonGM:" << nonGM;
-    //const bool importedSignCert = !sigCert.isEmpty();
+    const bool importedSignCert = !sigCert.isEmpty();
     const bool importedEncCert = !encCert.isEmpty();
 
     // === 导入签名证书 ===
@@ -2549,7 +2572,7 @@ Result<void> SkfPlugin::importKeyCert(const QString& devName, const QString& app
     };
 
     // 这里调签名程序会崩溃，找不到原因
-    /*if (importedSignCert) {
+    if (importedSignCert) {
         const QByteArray payload("wekey-import-cert-sign-check");
         auto signResult = sign(devName, appName, containerName, payload);
         if (signResult.isErr()) {
@@ -2565,7 +2588,7 @@ Result<void> SkfPlugin::importKeyCert(const QString& devName, const QString& app
                 Error(Error::Fail, "导入已执行，但签名验签校验失败：签名无效",
                       "SkfPlugin::importKeyCert"));
         }
-    }*/
+    }
 
     if (importedEncCert) {
         const QString plainText = QStringLiteral("wekey-import-cert-enc-check");
@@ -2913,6 +2936,12 @@ Result<QByteArray> SkfPlugin::sign(const QString& devName, const QString& appNam
 Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, const QString& containerName,
                                 const QByteArray& data, const QByteArray& signature) {
     QMutexLocker locker(&mutex_);
+    const bool hasActiveSession = hasActiveDeviceSessionLocked(devName);
+    const auto closeVerifyDeviceIfNeeded = [&]() {
+        if (!hasActiveSession) {
+            closeDevice(devName);
+        }
+    };
 
     qDebug() << "[verify] devName:" << devName << "appName:" << appName
              << "containerName:" << containerName
@@ -2954,7 +2983,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
         // === RSA 验签：导出公钥 + SHA-256 DigestInfo + RSAVerify ===
         if (!lib_->RSAVerify) {
             closeContainerHandle(devName, appName, containerName);
-            closeDevice(devName);
+            closeVerifyDeviceIfNeeded();
             return Result<bool>::err(
                 Error(Error::PluginLoadFailed, "SKF_RSAVerify 函数不可用", "SkfPlugin::verify"));
         }
@@ -2962,7 +2991,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
         // 步骤1：导出签名公钥（与 sign 中 RSASignData 使用同一容器密钥对）
         if (!lib_->ExportPublicKey) {
             closeContainerHandle(devName, appName, containerName);
-            closeDevice(devName);
+            closeVerifyDeviceIfNeeded();
             return Result<bool>::err(
                 Error(Error::PluginLoadFailed, "SKF_ExportPublicKey 函数不可用", "SkfPlugin::verify"));
         }
@@ -2973,7 +3002,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
             reinterpret_cast<skf::BYTE*>(&rsaPubKey), &rsaPubKeyLen);
         closeContainerHandle(devName, appName, containerName);
         if (ret != skf::SAR_OK) {
-            closeDevice(devName);
+            closeVerifyDeviceIfNeeded();
             qWarning() << "[verify] RSA ExportPublicKey 失败, ret:" << Qt::hex << ret;
             return Result<bool>::err(Error::fromSkf(ret, "SKF_ExportPublicKey"));
         }
@@ -2981,7 +3010,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
 
         // 步骤2：SHA-256 哈希（与 sign 完全一致：不需要公钥和 ID）
         if (!lib_->DigestInit || !lib_->Digest) {
-            closeDevice(devName);
+            closeVerifyDeviceIfNeeded();
             return Result<bool>::err(
                 Error(Error::PluginLoadFailed, "SKF_DigestInit/Digest 函数不可用", "SkfPlugin::verify"));
         }
@@ -2992,7 +3021,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
             nullptr,   // RSA 不需要 ID
             0, &hHash);
         if (ret != skf::SAR_OK || !hHash) {
-            closeDevice(devName);
+            closeVerifyDeviceIfNeeded();
             qWarning() << "[verify] RSA DigestInit(SHA256) 失败, ret:" << Qt::hex << ret;
             return Result<bool>::err(Error::fromSkf(ret, "SKF_DigestInit(SHA256)"));
         }
@@ -3003,7 +3032,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
             static_cast<skf::ULONG>(data.size()),
             reinterpret_cast<skf::BYTE*>(digest.data()), &digestLen);
         if (ret != skf::SAR_OK) {
-            closeDevice(devName);
+            closeVerifyDeviceIfNeeded();
             qWarning() << "[verify] RSA Digest(SHA256) 失败, ret:" << Qt::hex << ret;
             return Result<bool>::err(Error::fromSkf(ret, "SKF_Digest(SHA256)"));
         }
@@ -3029,7 +3058,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
         skf::ULONG modLen = rsaPubKey.bitLen / 8;
         qDebug() << "[verify] RSA 模长:" << modLen << "签名长度:" << signature.size();
         if (static_cast<skf::ULONG>(signature.size()) != modLen) {
-            closeDevice(devName);
+            closeVerifyDeviceIfNeeded();
             qWarning() << "[verify] RSA 签名长度" << signature.size()
                        << "不等于模长" << modLen;
             return Result<bool>::ok(false);
@@ -3041,7 +3070,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
             static_cast<skf::ULONG>(digestInfo.size()),
             const_cast<skf::BYTE*>(reinterpret_cast<const skf::BYTE*>(signature.constData())),
             static_cast<skf::ULONG>(signature.size()));
-        closeDevice(devName);
+        closeVerifyDeviceIfNeeded();
 
         qDebug() << "[verify] RSAVerify ret:" << Qt::hex << ret
                  << (ret == skf::SAR_OK ? "-> 验签成功" : "-> 验签失败");
@@ -3055,7 +3084,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
     // === SM2 验签 ===
     if (!lib_->ECCVerify) {
         closeContainerHandle(devName, appName, containerName);
-        closeDevice(devName);
+        closeVerifyDeviceIfNeeded();
         return Result<bool>::err(
             Error(Error::PluginLoadFailed, "SKF_ECCVerify 函数不可用", "SkfPlugin::verify"));
     }
@@ -3086,7 +3115,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
         ECDSA_SIG* ecSig = d2i_ECDSA_SIG(nullptr, &p, signature.size());
         if (!ecSig) {
             closeContainerHandle(devName, appName, containerName);
-            closeDevice(devName);
+            closeVerifyDeviceIfNeeded();
             qWarning() << "[verify] DER 签名解码失败, signature(hex):" << signature.toHex();
             return Result<bool>::err(
                 Error(Error::InvalidParam, "签名 DER 解码失败", "SkfPlugin::verify"));
@@ -3105,7 +3134,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
     // 步骤3：计算 SM3 哈希（与 sign 完全一致：含 SM2 预处理，公钥 + ID "1234567812345678"）
     if (!lib_->DigestInit || !lib_->Digest) {
         closeContainerHandle(devName, appName, containerName);
-        closeDevice(devName);
+        closeVerifyDeviceIfNeeded();
         return Result<bool>::err(
             Error(Error::PluginLoadFailed, "SKF_DigestInit/Digest 函数不可用", "SkfPlugin::verify"));
     }
@@ -3119,7 +3148,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
         idLen, &hHash);
     if (ret != skf::SAR_OK || !hHash) {
         closeContainerHandle(devName, appName, containerName);
-        closeDevice(devName);
+        closeVerifyDeviceIfNeeded();
         qWarning() << "[verify] DigestInit(SM3) 失败, ret:" << Qt::hex << ret;
         return Result<bool>::err(Error::fromSkf(ret, "SKF_DigestInit(SM3)"));
     }
@@ -3131,7 +3160,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
         reinterpret_cast<skf::BYTE*>(digest.data()), &digestLen);
     if (ret != skf::SAR_OK) {
         closeContainerHandle(devName, appName, containerName);
-        closeDevice(devName);
+        closeVerifyDeviceIfNeeded();
         qWarning() << "[verify] Digest(SM3) 失败, ret:" << Qt::hex << ret;
         return Result<bool>::err(Error::fromSkf(ret, "SKF_Digest(SM3)"));
     }
@@ -3145,7 +3174,7 @@ Result<bool> SkfPlugin::verify(const QString& devName, const QString& appName, c
         &sigBlob);
 
     closeContainerHandle(devName, appName, containerName);
-    closeDevice(devName);
+    closeVerifyDeviceIfNeeded();
 
     qDebug() << "[verify] ECCVerify ret:" << Qt::hex << ret
              << (ret == skf::SAR_OK ? "-> 验签成功" : "-> 验签失败");
@@ -3811,13 +3840,17 @@ Result<void> SkfPlugin::deleteFile(const QString& devName, const QString& appNam
 Result<QByteArray> SkfPlugin::generateRandom(const QString& devName, int count) {
     QMutexLocker locker(&mutex_);
 
+    const bool hasActiveSession = hasActiveDeviceSessionLocked(devName);
+
     auto devResult = openDevice(devName);
     if (devResult.isErr()) {
         return Result<QByteArray>::err(devResult.error());
     }
 
     if (!lib_->GenRandom) {
-        closeDevice(devName);
+        if (!hasActiveSession) {
+            closeDevice(devName);
+        }
         return Result<QByteArray>::err(
             Error(Error::PluginLoadFailed, "SKF_GenRandom 函数不可用", "SkfPlugin::generateRandom"));
     }
@@ -3825,7 +3858,9 @@ Result<QByteArray> SkfPlugin::generateRandom(const QString& devName, int count) 
     QByteArray buffer(count, '\0');
     skf::ULONG ret = lib_->GenRandom(devResult.value(), reinterpret_cast<skf::BYTE*>(buffer.data()),
                                       static_cast<skf::ULONG>(count));
-    closeDevice(devName);
+    if (!hasActiveSession) {
+        closeDevice(devName);
+    }
 
     if (ret != skf::SAR_OK) {
         return Result<QByteArray>::err(Error::fromSkf(ret, "SKF_GenRandom"));
@@ -3889,7 +3924,7 @@ Result<SkfPlugin::ParsedCertInfo> SkfPlugin::parseDerCertificate(const QByteArra
         if (bnSn) {
             char* hex = BN_bn2hex(bnSn);
             if (hex) {
-                info.serialNumber = QString::fromLatin1(hex).toLower();
+                info.serialNumber = QString::fromLatin1(hex).toUpper();
                 OPENSSL_free(hex);
             }
             BN_free(bnSn);
